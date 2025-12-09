@@ -1,26 +1,10 @@
-DROP TABLE IF EXISTS "iller"."Oda" CASCADE;
-DROP TABLE IF EXISTS "iller"."Poliklinik" CASCADE;
-DROP TABLE IF EXISTS "iller"."Hastane" CASCADE;
-DROP TABLE IF EXISTS "iller"."PoliklinikTuru" CASCADE;
-DROP TABLE IF EXISTS "iller"."Iller" CASCADE;
-DROP TABLE IF EXISTS "vatandas"."Doktor" CASCADE;
-DROP TABLE IF EXISTS "vatandas"."Personel" CASCADE;
-DROP TABLE IF EXISTS "vatandas"."Vatandas" CASCADE;
-DROP TABLE IF EXISTS "vatandas"."Hasta" CASCADE;
-DROP TABLE IF EXISTS "vatandas"."HastaYakini" CASCADE;
-DROP TABLE IF EXISTS "vatandas"."HastanePersonel" CASCADE;
-DROP TABLE IF EXISTS "randevular"."Randevu" CASCADE;
-DROP TABLE IF EXISTS "randevular"."Muayene" CASCADE;
-DROP TABLE IF EXISTS "randevular"."Tahlil" CASCADE;
-DROP TABLE IF EXISTS "randevular"."Recete" CASCADE;
-DROP TABLE IF EXISTS "randevular"."Ilaclar" CASCADE;
-DROP TABLE IF EXISTS "randevular"."ReceteDetay" CASCADE;
-DROP TABLE IF EXISTS "randevular"."Odeme" CASCADE;
+DROP SCHEMA IF EXISTS "iller" CASCADE;
+DROP SCHEMA IF EXISTS "vatandas" CASCADE;
+DROP SCHEMA IF EXISTS "randevular" CASCADE;
 
-
-CREATE SCHEMA IF NOT EXISTS "iller";
-CREATE SCHEMA IF NOT EXISTS "vatandas";
-CREATE SCHEMA IF NOT EXISTS "randevular";
+CREATE SCHEMA "iller";
+CREATE SCHEMA "vatandas";
+CREATE SCHEMA "randevular";
 
 
 CREATE TABLE "vatandas"."Vatandas" (
@@ -196,6 +180,36 @@ CREATE TABLE "randevular"."Randevu" (
     CONSTRAINT "doktorZamanUnique" UNIQUE ("doktorId", "randevuTarihi")
 );
 
+CREATE TABLE "randevular"."RandevuIptalLog" (
+    "logId" SERIAL PRIMARY KEY,
+    "randevuId" INT,
+    "hastaId" INT,
+    "doktorId" INT,
+    "iptalTarihi" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    "iptalNedeni" VARCHAR(255) DEFAULT 'Kullanıcı tarafından silindi'
+);
+
+CREATE TABLE "randevular"."Yatis" (
+    "yatisId" SERIAL NOT NULL,
+    "hastaId" INT NOT NULL,
+    "hastaneId" INT NOT NULL,
+    "odaNo" VARCHAR(10) NOT NULL,
+    "yatisTarihi" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    "taburcuTarihi" TIMESTAMP, -- boş ise hasta hala yatıyor demektir
+
+    CONSTRAINT "yatisPK" PRIMARY KEY ("yatisId"),
+
+    -- Bir hasta aynı anda sadece bir yerde yatıyor olabilir
+
+    CONSTRAINT "yatisHastaFK" FOREIGN KEY ("hastaId") 
+        REFERENCES "vatandas"."Hasta" ("hastaId") 
+        ON DELETE CASCADE,
+
+    CONSTRAINT "yatisOdaFK" FOREIGN KEY ("hastaneId", "odaNo") 
+        REFERENCES "iller"."Oda" ("hastaneId", "odaNo") 
+        ON DELETE CASCADE
+);
+
 CREATE TABLE "randevular"."Muayene" (
     "muayeneId" SERIAL NOT NULL,
     "randevuId" INT NOT NULL,
@@ -248,7 +262,7 @@ CREATE TABLE "randevular"."Recete" (
 );
 
 CREATE TABLE "randevular"."Ilaclar" (
-    "barkod" INT NOT NULL,
+    "barkod" BIGINT NOT NULL,
     "ilacAdi" VARCHAR(50) NOT NULL,
     
     CONSTRAINT "ilaclarPK" PRIMARY KEY ("barkod")
@@ -256,8 +270,8 @@ CREATE TABLE "randevular"."Ilaclar" (
 
 CREATE TABLE "randevular"."ReceteDetay" (
     "receteId" INT NOT NULL,
-    "ilacId" INT NOT NULL,
-    "kullanımDozu" INT NOT NULL,
+    "ilacId" BIGINT NOT NULL,
+    "kullanimDozu" VARCHAR(100) NOT NULL,
     "adet" INT NOT NULL,  --bunun 0'dan büyük olup olmadığı kontrol edilcek
     
     CONSTRAINT "receteDetayPK" PRIMARY KEY ("receteId", "ilacId"),
@@ -275,7 +289,7 @@ CREATE TABLE "randevular"."Odeme" (
     "odemeId" SERIAL NOT NULL,
     "muayeneId" INT NOT NULL,
     "veznedarId" INT NOT NULL,
-    "tutar" INT NOT NULL,
+    "tutar" DECIMAL(10, 2) NOT NULL,
     "odemeTarihi" TIMESTAMP DEFAULT CURRENT_TIMESTAMP, --işlem tarihini otomatik işlemin yapıldığı tarih yapar
     
     CONSTRAINT "odemePK" PRIMARY KEY ("odemeId"),
@@ -290,3 +304,110 @@ CREATE TABLE "randevular"."Odeme" (
     
     CONSTRAINT "odemeUnique" UNIQUE ("muayeneId")
 );
+
+
+--FONKSİYONLAR
+
+-- Doktor Arama
+CREATE OR REPLACE FUNCTION "vatandas"."fn_DoktorAra" (p_uzmanlik VARCHAR)
+RETURNS TABLE ("AdSoyad" VARCHAR, "HastaneAdi" VARCHAR) AS '
+    SELECT (v."ad" || '' '' || v."soyad")::VARCHAR, h."hastaneAdi"
+    FROM "vatandas"."Doktor" d
+    JOIN "vatandas"."Vatandas" v ON d."doktorId" = v."vatandasId"
+    JOIN "vatandas"."HastanePersonel" hp ON d."doktorId" = hp."personelId"
+    JOIN "iller"."Hastane" h ON hp."hastaneId" = h."hastaneId"
+    WHERE d."uzmanlikAlani" ILIKE ''%'' || p_uzmanlik || ''%''
+' LANGUAGE SQL;
+
+-- Hasta Geçmişi
+CREATE OR REPLACE FUNCTION "randevular"."fn_HastaGecmisi" (p_tc BIGINT)
+RETURNS TABLE ("Tarih" TIMESTAMP, "Tani" TEXT) AS '
+    SELECT r."randevuTarihi", m."tani"
+    FROM "vatandas"."Vatandas" v
+    JOIN "vatandas"."Hasta" h ON v."vatandasId" = h."hastaId"
+    JOIN "randevular"."Randevu" r ON h."hastaId" = r."hastaId"
+    JOIN "randevular"."Muayene" m ON r."randevuId" = m."randevuId"
+    WHERE v."tcKimlikNo" = p_tc
+' LANGUAGE SQL;
+
+-- İlaç Sayısı
+CREATE OR REPLACE FUNCTION "randevular"."fn_ReceteIlacSayisi" (p_receteId INT)
+RETURNS INT AS '
+    SELECT COUNT(*)::INT 
+    FROM "randevular"."ReceteDetay" 
+    WHERE "receteId" = p_receteId
+' LANGUAGE SQL;
+
+-- Hastane Ciro Hesapla
+CREATE OR REPLACE FUNCTION "randevular"."fn_HastaneCiroHesapla" (p_hastaneId INT)
+RETURNS DECIMAL AS '
+    SELECT COALESCE(SUM(o."tutar"), 0)
+    FROM "randevular"."Odeme" o
+    JOIN "randevular"."Muayene" m ON o."muayeneId" = m."muayeneId"
+    JOIN "randevular"."Randevu" r ON m."randevuId" = r."randevuId"
+    JOIN "iller"."Poliklinik" p ON r."poliklinikId" = p."poliklinikId"
+    WHERE p."hastaneId" = p_hastaneId
+' LANGUAGE SQL;
+
+
+--TRIGGERLAR
+
+-- Oda Kapasite
+CREATE OR REPLACE FUNCTION "randevular"."trg_OdaKapasite_Func"() RETURNS TRIGGER AS '
+DECLARE mevcut INT; kapasite INT; BEGIN
+ SELECT "kapasite" INTO kapasite FROM "iller"."Oda" WHERE "hastaneId"=NEW."hastaneId" AND "odaNo"=NEW."odaNo";
+ SELECT COUNT(*) INTO mevcut FROM "randevular"."Yatis" WHERE "hastaneId"=NEW."hastaneId" AND "odaNo"=NEW."odaNo" AND "taburcuTarihi" IS NULL;
+ IF mevcut >= kapasite THEN RAISE EXCEPTION ''HATA: Oda dolu! Kapasite aşıldı.''; END IF;
+ RETURN NEW;
+END; ' LANGUAGE plpgsql;
+
+-- Geçmiş Tarih 
+CREATE OR REPLACE FUNCTION "randevular"."trg_RandevuTarih_Func"() RETURNS TRIGGER AS '
+BEGIN IF NEW."randevuTarihi" < NOW() THEN RAISE EXCEPTION ''HATA: Geçmişe randevu verilemez!''; END IF; RETURN NEW; END;
+' LANGUAGE plpgsql;
+
+-- Loglama 
+CREATE OR REPLACE FUNCTION "randevular"."trg_RandevuLog_Func"() RETURNS TRIGGER AS '
+BEGIN INSERT INTO "randevular"."RandevuIptalLog" ("randevuId", "hastaId", "doktorId") VALUES (OLD."randevuId", OLD."hastaId", OLD."doktorId"); RETURN OLD; END;
+' LANGUAGE plpgsql;
+
+-- Adet Kontrol 
+CREATE OR REPLACE FUNCTION "randevular"."trg_ReceteAdet_Func"() RETURNS TRIGGER AS '
+BEGIN IF NEW."adet" <= 0 THEN RAISE EXCEPTION ''HATA: Adet 0 dan büyük olmalı!''; END IF; RETURN NEW; END;
+' LANGUAGE plpgsql;
+
+
+DROP TRIGGER IF EXISTS "trg_OdaKapasite" ON "randevular"."Yatis";
+CREATE TRIGGER "trg_OdaKapasite" BEFORE INSERT ON "randevular"."Yatis"
+FOR EACH ROW EXECUTE FUNCTION "randevular"."trg_OdaKapasite_Func"();
+
+DROP TRIGGER IF EXISTS "trg_RandevuTarih" ON "randevular"."Randevu";
+CREATE TRIGGER "trg_RandevuTarih" BEFORE INSERT ON "randevular"."Randevu"
+FOR EACH ROW EXECUTE FUNCTION "randevular"."trg_RandevuTarih_Func"();
+
+DROP TRIGGER IF EXISTS "trg_RandevuLog" ON "randevular"."Randevu";
+CREATE TRIGGER "trg_RandevuLog" AFTER DELETE ON "randevular"."Randevu"
+FOR EACH ROW EXECUTE FUNCTION "randevular"."trg_RandevuLog_Func"();
+
+DROP TRIGGER IF EXISTS "trg_ReceteAdet" ON "randevular"."ReceteDetay";
+CREATE TRIGGER "trg_ReceteAdet" BEFORE INSERT OR UPDATE ON "randevular"."ReceteDetay"
+FOR EACH ROW EXECUTE FUNCTION "randevular"."trg_ReceteAdet_Func"();
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
