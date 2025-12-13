@@ -6,7 +6,6 @@ CREATE SCHEMA "iller";
 CREATE SCHEMA "vatandas";
 CREATE SCHEMA "randevular";
 
-
 CREATE TABLE "vatandas"."Vatandas" (
     "vatandasId" SERIAL NOT NULL,
 	"tcKimlikNo" BIGINT NOT NULL,
@@ -24,6 +23,7 @@ CREATE TABLE "vatandas"."Personel" (
     "gorevTuru" VARCHAR(50) NOT NULL, 
     "unvan" VARCHAR(50),
     "sicilNo" VARCHAR(20) NOT NULL,
+    "sifre" VARCHAR(20) DEFAULT '1234',
 
     CONSTRAINT "personelPK" PRIMARY KEY ("personelId"),
     CONSTRAINT "personelSicilUnique" UNIQUE ("sicilNo"),
@@ -65,6 +65,7 @@ CREATE TABLE "iller"."Hastane" (
     "hastaneAdi" VARCHAR(100) NOT NULL,
     "ilPlaka" INT NOT NULL,
     "bashekimId" INT, 
+    "toplamCiro" DECIMAL(15, 2) DEFAULT 0,
 
     CONSTRAINT "hastanePK" PRIMARY KEY ("hastaneId"),
     CONSTRAINT "bashekimUnique" UNIQUE ("bashekimId"),
@@ -287,12 +288,17 @@ CREATE TABLE "randevular"."ReceteDetay" (
 
 CREATE TABLE "randevular"."Odeme" (
     "odemeId" SERIAL NOT NULL,
-    "muayeneId" INT NOT NULL,
+    "randevuId" INT NOT NULL,
+    "muayeneId" INT,
     "veznedarId" INT NOT NULL,
     "tutar" DECIMAL(10, 2) NOT NULL,
     "odemeTarihi" TIMESTAMP DEFAULT CURRENT_TIMESTAMP, --işlem tarihini otomatik işlemin yapıldığı tarih yapar
     
     CONSTRAINT "odemePK" PRIMARY KEY ("odemeId"),
+    
+    CONSTRAINT "oRandevuFK" FOREIGN KEY ("randevuId") 
+        REFERENCES "randevular"."Randevu" ("randevuId") 
+        ON DELETE CASCADE,
     
     CONSTRAINT "oMuayeneFK" FOREIGN KEY ("muayeneId") 
         REFERENCES "randevular"."Muayene" ("muayeneId") 
@@ -307,6 +313,27 @@ CREATE TABLE "randevular"."Odeme" (
 
 
 --FONKSİYONLAR
+
+CREATE OR REPLACE FUNCTION "randevular"."fn_CiroGuncelle"()
+RETURNS TRIGGER AS '
+DECLARE
+    v_hastaneId INT;
+BEGIN
+    SELECT p."hastaneId" INTO v_hastaneId
+    FROM "randevular"."Randevu" r
+    INNER JOIN "iller"."Poliklinik" p ON r."poliklinikId" = p."poliklinikId"
+    WHERE r."randevuId" = NEW."randevuId" -- Artık randevuId üzerinden buluyoruz
+    LIMIT 1;
+
+    IF v_hastaneId IS NOT NULL THEN
+        UPDATE "iller"."Hastane"
+        SET "toplamCiro" = COALESCE("toplamCiro", 0) + NEW."tutar"
+        WHERE "hastaneId" = v_hastaneId;
+    END IF;
+
+    RETURN NEW;
+END;
+' LANGUAGE plpgsql;
 
 -- Doktor Arama
 CREATE OR REPLACE FUNCTION "vatandas"."fn_DoktorAra" (p_uzmanlik VARCHAR)
@@ -339,18 +366,28 @@ RETURNS INT AS '
 ' LANGUAGE SQL;
 
 -- Hastane Ciro Hesapla
-CREATE OR REPLACE FUNCTION "randevular"."fn_HastaneCiroHesapla" (p_hastaneId INT)
-RETURNS DECIMAL AS '
+CREATE OR REPLACE FUNCTION "randevular"."fn_HastaneCiroHesapla"(p_hastaneId INT)
+RETURNS DECIMAL(10,2) AS '
+DECLARE
+    toplamCiro DECIMAL(10,2);
+BEGIN
     SELECT COALESCE(SUM(o."tutar"), 0)
+    INTO toplamCiro
     FROM "randevular"."Odeme" o
-    JOIN "randevular"."Muayene" m ON o."muayeneId" = m."muayeneId"
-    JOIN "randevular"."Randevu" r ON m."randevuId" = r."randevuId"
-    JOIN "iller"."Poliklinik" p ON r."poliklinikId" = p."poliklinikId"
-    WHERE p."hastaneId" = p_hastaneId
-' LANGUAGE SQL;
+    INNER JOIN "randevular"."Randevu" r ON o."randevuId" = r."randevuId"
+    INNER JOIN "iller"."Poliklinik" p ON r."poliklinikId" = p."poliklinikId"
+    WHERE p."hastaneId" = p_hastaneId;
 
+    RETURN toplamCiro;
+END;
+' LANGUAGE plpgsql;
 
 --TRIGGERLAR
+
+CREATE TRIGGER "trg_OdemeYapildi"
+AFTER INSERT ON "randevular"."Odeme"
+FOR EACH ROW
+EXECUTE FUNCTION "randevular"."fn_CiroGuncelle"();
 
 -- Oda Kapasite
 CREATE OR REPLACE FUNCTION "randevular"."trg_OdaKapasite_Func"() RETURNS TRIGGER AS '
@@ -399,9 +436,81 @@ FOR EACH ROW EXECUTE FUNCTION "randevular"."trg_ReceteAdet_Func"();
 
 
 
+TRUNCATE TABLE "randevular"."ReceteDetay" CASCADE;
+TRUNCATE TABLE "randevular"."Recete" CASCADE;
+TRUNCATE TABLE "randevular"."Muayene" CASCADE;
+TRUNCATE TABLE "randevular"."Randevu" CASCADE;
+TRUNCATE TABLE "randevular"."Ilaclar" CASCADE;
+TRUNCATE TABLE "randevular"."RandevuIptalLog" CASCADE;
+TRUNCATE TABLE "randevular"."Odeme" CASCADE;
+TRUNCATE TABLE "vatandas"."HastanePersonel" CASCADE;
+TRUNCATE TABLE "iller"."Poliklinik" CASCADE;
+TRUNCATE TABLE "iller"."PoliklinikTuru" CASCADE;
+TRUNCATE TABLE "iller"."Hastane" CASCADE;
+TRUNCATE TABLE "iller"."Iller" CASCADE;
+TRUNCATE TABLE "vatandas"."Doktor" CASCADE;
+TRUNCATE TABLE "vatandas"."Personel" CASCADE;
+TRUNCATE TABLE "vatandas"."Vatandas" CASCADE;
 
+INSERT INTO "iller"."Iller" ("ilPlaka", "ilAdi") VALUES (6, 'Ankara');
+INSERT INTO "iller"."Iller" ("ilPlaka", "ilAdi") VALUES (34, 'İstanbul');
 
+INSERT INTO "iller"."Hastane" ("hastaneId", "hastaneAdi", "ilPlaka") VALUES (1, 'Ankara Şehir Hastanesi', 6);
+INSERT INTO "iller"."Hastane" ("hastaneId", "hastaneAdi", "ilPlaka") VALUES (2, 'İstanbul Şehir Hastanesi', 34);
 
+INSERT INTO "iller"."PoliklinikTuru" ("turId", "turAdi") VALUES (1, 'Kardiyoloji');
+INSERT INTO "iller"."PoliklinikTuru" ("turId", "turAdi") VALUES (2, 'Dahiliye');
+INSERT INTO "iller"."PoliklinikTuru" ("turId", "turAdi") VALUES (3, 'Göz Hastalıkları');
+INSERT INTO "iller"."PoliklinikTuru" ("turId", "turAdi") VALUES (4, 'Kulak Burun Boğaz');
+
+INSERT INTO "iller"."Poliklinik" ("poliklinikId", "hastaneId", "turId") VALUES (1, 1, 1);
+INSERT INTO "iller"."Poliklinik" ("poliklinikId", "hastaneId", "turId") VALUES (2, 1, 2);
+INSERT INTO "iller"."Poliklinik" ("poliklinikId", "hastaneId", "turId") VALUES (3, 2, 3);
+INSERT INTO "iller"."Poliklinik" ("poliklinikId", "hastaneId", "turId") VALUES (4, 2, 4);
+
+INSERT INTO "vatandas"."Vatandas" ("vatandasId", "tcKimlikNo", "ad", "soyad", "adres") VALUES (1, 11111111111, 'Ali', 'Yılmaz', 'Çankaya/Ankara');
+INSERT INTO "vatandas"."Personel" ("personelId", "gorevTuru", "unvan", "sicilNo", "sifre") VALUES (1, 'Doktor', 'Prof. Dr.', 'DR-101', '1234');
+INSERT INTO "vatandas"."Doktor" ("doktorId", "uzmanlikAlani") VALUES (1, 'Kardiyoloji');
+INSERT INTO "vatandas"."HastanePersonel" ("hastanePersonelId", "personelId", "hastaneId") VALUES (1, 1, 1);
+
+INSERT INTO "vatandas"."Vatandas" ("vatandasId", "tcKimlikNo", "ad", "soyad", "adres") VALUES (2, 22222222222, 'Zeynep', 'Kaya', 'Keçiören/Ankara');
+INSERT INTO "vatandas"."Personel" ("personelId", "gorevTuru", "unvan", "sicilNo", "sifre") VALUES (2, 'Doktor', 'Op. Dr.', 'DR-102', '1234');
+INSERT INTO "vatandas"."Doktor" ("doktorId", "uzmanlikAlani") VALUES (2, 'Dahiliye');
+INSERT INTO "vatandas"."HastanePersonel" ("hastanePersonelId", "personelId", "hastaneId") VALUES (2, 2, 1);
+
+INSERT INTO "vatandas"."Vatandas" ("vatandasId", "tcKimlikNo", "ad", "soyad", "adres") VALUES (3, 33333333333, 'Ahmet', 'Demir', 'Mamak/Ankara');
+INSERT INTO "vatandas"."Personel" ("personelId", "gorevTuru", "unvan", "sicilNo", "sifre") VALUES (3, 'Sekreter', 'Tıbbi Sekreter', 'SEK-001', '1234');
+INSERT INTO "vatandas"."HastanePersonel" ("hastanePersonelId", "personelId", "hastaneId") VALUES (3, 3, 1);
+
+INSERT INTO "vatandas"."Vatandas" ("vatandasId", "tcKimlikNo", "ad", "soyad", "adres") VALUES (4, 44444444444, 'Seda', 'Yıldız', 'Batıkent/Ankara');
+INSERT INTO "vatandas"."Personel" ("personelId", "gorevTuru", "unvan", "sicilNo", "sifre") VALUES (4, 'Sekreter', 'Danışma', 'SEK-002', '1234');
+INSERT INTO "vatandas"."HastanePersonel" ("hastanePersonelId", "personelId", "hastaneId") VALUES (4, 4, 1);
+
+INSERT INTO "vatandas"."Vatandas" ("vatandasId", "tcKimlikNo", "ad", "soyad", "adres") VALUES (5, 55555555555, 'Burak', 'Can', 'Başakşehir/İstanbul');
+INSERT INTO "vatandas"."Personel" ("personelId", "gorevTuru", "unvan", "sicilNo", "sifre") VALUES (5, 'Doktor', 'Uzm. Dr.', 'DR-201', '1234');
+INSERT INTO "vatandas"."Doktor" ("doktorId", "uzmanlikAlani") VALUES (5, 'Göz Hastalıkları');
+INSERT INTO "vatandas"."HastanePersonel" ("hastanePersonelId", "personelId", "hastaneId") VALUES (5, 5, 2);
+
+INSERT INTO "vatandas"."Vatandas" ("vatandasId", "tcKimlikNo", "ad", "soyad", "adres") VALUES (6, 66666666666, 'Elif', 'Şahin', 'Fatih/İstanbul');
+INSERT INTO "vatandas"."Personel" ("personelId", "gorevTuru", "unvan", "sicilNo", "sifre") VALUES (6, 'Doktor', 'Op. Dr.', 'DR-202', '1234');
+INSERT INTO "vatandas"."Doktor" ("doktorId", "uzmanlikAlani") VALUES (6, 'Kulak Burun Boğaz');
+INSERT INTO "vatandas"."HastanePersonel" ("hastanePersonelId", "personelId", "hastaneId") VALUES (6, 6, 2);
+
+INSERT INTO "randevular"."Ilaclar" ("barkod", "ilacAdi") VALUES (8699501, 'Parol');
+INSERT INTO "randevular"."Ilaclar" ("barkod", "ilacAdi") VALUES (8699502, 'Aspirin');
+INSERT INTO "randevular"."Ilaclar" ("barkod", "ilacAdi") VALUES (8699503, 'Augmentin');
+INSERT INTO "randevular"."Ilaclar" ("barkod", "ilacAdi") VALUES (8699504, 'Majezik');
+INSERT INTO "randevular"."Ilaclar" ("barkod", "ilacAdi") VALUES (8699505, 'Arveles');
+INSERT INTO "randevular"."Ilaclar" ("barkod", "ilacAdi") VALUES (8699506, 'Dikloron');
+INSERT INTO "randevular"."Ilaclar" ("barkod", "ilacAdi") VALUES (8699507, 'Dolorex');
+INSERT INTO "randevular"."Ilaclar" ("barkod", "ilacAdi") VALUES (8699508, 'Nurofen');
+INSERT INTO "randevular"."Ilaclar" ("barkod", "ilacAdi") VALUES (8699509, 'Gripin');
+INSERT INTO "randevular"."Ilaclar" ("barkod", "ilacAdi") VALUES (8699510, 'Vermidon');
+
+SELECT setval(pg_get_serial_sequence('"vatandas"."Vatandas"', 'vatandasId'), (SELECT MAX("vatandasId") FROM "vatandas"."Vatandas"));
+SELECT setval(pg_get_serial_sequence('"iller"."Hastane"', 'hastaneId'), (SELECT MAX("hastaneId") FROM "iller"."Hastane"));
+SELECT setval(pg_get_serial_sequence('"iller"."Poliklinik"', 'poliklinikId'), (SELECT MAX("poliklinikId") FROM "iller"."Poliklinik"));
+SELECT setval(pg_get_serial_sequence('"vatandas"."HastanePersonel"', 'hastanePersonelId'), (SELECT MAX("hastanePersonelId") FROM "vatandas"."HastanePersonel"));
 
 
 
