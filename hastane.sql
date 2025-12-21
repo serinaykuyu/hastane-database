@@ -272,7 +272,6 @@
     CREATE TABLE "randevular"."ReceteDetay" (
         "receteId" INT NOT NULL,
         "ilacId" BIGINT NOT NULL,
-        "kullanimDozu" VARCHAR(100) NOT NULL,
         "adet" INT NOT NULL,  --bunun 0'dan büyük olup olmadığı kontrol edilcek
         
         CONSTRAINT "receteDetayPK" PRIMARY KEY ("receteId", "ilacId"),
